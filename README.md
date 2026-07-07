@@ -16,7 +16,52 @@ deep_research(query: str, file_paths: list[str] | None = None)
 - **Cost-Effective (Free with GCP Credits):** Running advanced search/research workflows can sometimes be costly. However, by running on Google Cloud Vertex AI, you can take advantage of GCP's **$300 free trial credits**, making this enterprise-grade deep research completely free to run.
 
 ### Architectural Design
-The MCP process itself is intentionally lightweight. `server.py` starts a local background HTTP worker on `127.0.0.1`, and forwards tool calls to it. `worker.py` handles Google Cloud application-default credentials (ADC), Vertex Gemini calls, search grounding, and optional file inputs. This clean separation of concerns avoids the Windows/FastMCP stdio hang that often occurs when running heavy network calls directly inside the stdio-based MCP process.
+
+```text
+┌────────────────────────────────────────────────────────┐
+│                      IDE / Client                      │
+│                (Kilo Code, Hermes, etc.)               │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                 Stdio (stdin / stdout)
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│                       server.py                        │
+│                 (Lightweight FastMCP)                  │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                     HTTP (localhost)
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│                       worker.py                        │
+│         (Local Background Threaded HTTP Server)        │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                    HTTPS / gRPC
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│               Google Cloud Platform (GCP)              │
+│                Vertex AI (Gemini 3.5)                  │
+├────────────────────────────────────────────────────────┤
+│  ┌───────────────────────┐   ┌───────────────────────┐ │
+│  │   Gemini 3.5 Flash    │   │ Google Search Ground  │ │
+│  │ (high thinking mode)  │ ──►  (multiple websites)  │ │
+│  └───────────────────────┘   └───────────────────────┘ │
+└────────────────────────────────────────────────────────┘
+```
+
+#### Why This Dual-Process Architecture Works (And Why It's Better)
+
+1. **Immunity to stdio Hangs/Deadlocks:**
+   Standard search/research MCPs often execute heavy HTTP network calls, file reads, and multi-second AI generation tasks directly within the main stdio loop (`server.py`). On Windows systems especially, this often blocks or deadlocks the standard input/output channels, causing the MCP server or host IDE to freeze. 
+   
+   By spinning up a separate, threaded local HTTP process (`worker.py`), the main stdio loop is kept completely clear. It only handles fast HTTP serialization to the local worker, preventing any possibility of stdio blockages.
+
+2. **Deeper & More Reliable Grounding:**
+   Instead of performing a single Google search query and fetching snippets (which typical search MCP servers do, often getting rate-limited or returning incomplete context), this implementation utilizes Vertex Gemini's native search grounding. The model itself can analyze, query, and cross-reference results from **multiple websites** concurrently inside a unified high-thinking session to synthesize a truly reliable, complete response.
 
 ## What It Does
 
